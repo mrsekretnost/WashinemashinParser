@@ -43,8 +43,24 @@ st.markdown("""
         font-weight: bold;
         font-size: 0.8rem;
     }
+    .store-badge-eldorado {
+        background-color: #7950f2;
+        color: white !important;
+        padding: 3px 8px;
+        border-radius: 8px;
+        font-weight: bold;
+        font-size: 0.8rem;
+    }
     .store-badge-citilink {
         background-color: #1c7ed6;
+        color: white !important;
+        padding: 3px 8px;
+        border-radius: 8px;
+        font-weight: bold;
+        font-size: 0.8rem;
+    }
+    .store-badge-positr {
+        background-color: #0ca678;
         color: white !important;
         padding: 3px 8px;
         border-radius: 8px;
@@ -72,7 +88,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🧺 Стиральные машины: сравнение цен по магазинам")
-st.caption("Группировка одной и той же модели по DNS, М.Видео и Ситилинку с доставкой в г. Георгиевск")
+st.caption("Группировка одной и той же модели по DNS, М.Видео, Эльдорадо, Ситилинку и Позитронике с доставкой в г. Георгиевск")
 
 tab_catalog, tab_watchlist, tab_update = st.tabs(["🛒 Каталог со сравнением цен", "🔔 Мониторинг цен", "⚡ Сбор данных / Парсинг"])
 
@@ -95,12 +111,30 @@ def extract_model_key(brand: str, title: str):
     model_code = digit_tokens[0] if digit_tokens else (tokens[0] if tokens else '')
     return brand_clean, model_code
 
+def get_store_badge_class(store: str) -> str:
+    if store == 'DNS':
+        return 'store-badge-dns'
+    elif store == 'М.Видео':
+        return 'store-badge-mvideo'
+    elif store == 'Эльдорадо':
+        return 'store-badge-eldorado'
+    elif store == 'Ситилинк':
+        return 'store-badge-citilink'
+    else:
+        return 'store-badge-positr'
+
 with st.sidebar:
     st.header("⚙️ Фильтры поиска")
     st.info("📍 **Локация**: г. Георгиевск (Ставропольский край)")
 
-    all_stores = ["DNS", "М.Видео", "Ситилинк"]
-    selected_stores = st.multiselect("Магазины", options=all_stores, default=all_stores)
+    # Список доступных магазинов
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT DISTINCT store FROM products WHERE store != '' ORDER BY store ASC")
+    db_stores = [r[0] for r in cur.fetchall()]
+    conn.close()
+
+    selected_stores = st.multiselect("Магазины", options=db_stores, default=db_stores)
 
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -157,21 +191,17 @@ with tab_catalog:
         kw = search_keyword.lower()
         raw_products = [p for p in raw_products if kw in p['title'].lower() or kw in p['brand'].lower()]
 
-    # Группируем товары по модели
     grouped_models = defaultdict(list)
     for p in raw_products:
         b, c = extract_model_key(p['brand'], p['title'])
         key = f"{b}_{c}" if c else f"single_{p['id']}"
         grouped_models[key].append(p)
 
-    # Фильтруем если выбрано "Только модели в нескольких магазинах"
     if only_multi_store:
         grouped_models = {k: v for k, v in grouped_models.items() if len(set(x['store'] for x in v)) > 1}
 
-    # Сортируем группы по минимальной цене
     sorted_groups = sorted(grouped_models.values(), key=lambda items: min(x['price'] for x in items if x['price'] > 0) if items else 0)
 
-    # Статистика
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
     with col_m1:
         st.metric("Уникальных моделей", len(sorted_groups))
@@ -186,7 +216,6 @@ with tab_catalog:
 
     st.write("")
 
-    # Экспорт в Excel со сравнением
     if sorted_groups:
         export_rows = []
         for g in sorted_groups:
@@ -195,10 +224,12 @@ with tab_catalog:
             export_rows.append({
                 'Бренд': main_p['brand'],
                 'Название': main_p['title'],
-                'Цена DNS (руб)': prices_by_store.get('DNS', '—'),
-                'Цена М.Видео (руб)': prices_by_store.get('М.Видео', '—'),
-                'Цена Ситилинк (руб)': prices_by_store.get('Ситилинк', '—'),
-                'Лучшая цена (руб)': min(x['price'] for x in g if x['price'] > 0),
+                'Цена DNS': prices_by_store.get('DNS', '—'),
+                'Цена М.Видео': prices_by_store.get('М.Видео', '—'),
+                'Цена Эльдорадо': prices_by_store.get('Эльдорадо', '—'),
+                'Цена Ситилинк': prices_by_store.get('Ситилинк', '—'),
+                'Цена Позитроника': prices_by_store.get('Позитроника', '—'),
+                'Лучшая цена': min(x['price'] for x in g if x['price'] > 0),
                 'Разница в цене': (max(x['price'] for x in g) - min(x['price'] for x in g)) if len(g) > 1 else 0,
                 'Загрузка (кг)': main_p['load_capacity'] or '—',
                 'Отжим (об/мин)': main_p['spin_speed'] or '—',
@@ -249,7 +280,6 @@ with tab_catalog:
                 stores_in_group = set(x['store'] for x in g)
 
                 with st.container(border=True):
-                    # Заголовок карточки
                     col_t1, col_t2 = st.columns([3, 1])
                     with col_t1:
                         st.subheader(f"{main_item['title']}")
@@ -259,7 +289,6 @@ with tab_catalog:
 
                     c_img, c_specs, c_stores = st.columns([1, 1.3, 2.2])
 
-                    # Фото слева
                     with c_img:
                         img_to_show = next((x['image_url'] for x in g if x['image_url']), '')
                         if img_to_show:
@@ -267,7 +296,6 @@ with tab_catalog:
                         else:
                             st.caption("📦 Фото отсутствует")
 
-                    # Характеристики по центру
                     with c_specs:
                         st.markdown(f"**Характеристики:**")
                         specs_list = []
@@ -291,15 +319,12 @@ with tab_catalog:
                         else:
                             st.caption("Стандартные габариты 60×85 см")
 
-                    # Блок сравнения магазинов справа
                     with c_stores:
                         st.markdown(f"**Цены в магазинах с доставкой в Георгиевск:**")
-                        
-                        # Сортируем предложения от самого дешевого к дорогому
                         sorted_offers = sorted(g, key=lambda x: x['price'])
                         for offer in sorted_offers:
                             store_name = offer['store']
-                            badge_cls = "store-badge-dns" if store_name == 'DNS' else ("store-badge-mvideo" if store_name == 'М.Видео' else "store-badge-citilink")
+                            badge_cls = get_store_badge_class(store_name)
                             is_best = (offer['price'] == min_price and len(stores_in_group) > 1)
 
                             col_s1, col_s2, col_s3, col_s4 = st.columns([1, 1.2, 1.3, 0.8])
@@ -316,7 +341,6 @@ with tab_catalog:
                             with col_s4:
                                 st.link_button("Купить", offer['url'], use_container_width=True)
 
-                    # Нижняя панель действий
                     st.divider()
                     c_act1, c_act2 = st.columns([1, 4])
                     with c_act1:
@@ -370,10 +394,12 @@ with tab_watchlist:
 with tab_update:
     st.subheader("⚡ Принудительное обновление каталога")
     st.markdown("""
-    Парсер подключен к трем крупнейшим сетям:
+    Парсер подключен к 5 крупнейшим федеральным сетям:
     - **DNS** (г. Георгиевск, региональный склад и магазины)
     - **М.Видео** (доставка курьером на дом по Ставропольскому краю)
+    - **Эльдорадо** (программа утилизации и акции)
     - **Ситилинк** (курьерская доставка крупной бытовой техники)
+    - **Позитроника** (партнерская сеть доставки электроники)
     """)
 
     pages_to_crawl = st.slider("Глубина сбора (страниц с каждого магазина):", min_value=1, max_value=5, value=2)
