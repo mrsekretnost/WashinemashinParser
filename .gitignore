@@ -1,0 +1,10 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+user_session_dns/
+my_browser_data/
+captures/
+malenia_profile/
+*.png
+.streamlit/
