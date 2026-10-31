@@ -6,6 +6,7 @@ from parser_mvideo import parse_mvideo
 from parser_citilink import parse_citilink
 from parser_eldorado import parse_eldorado
 from parser_positronica import parse_positronica
+from parser_rbt import parse_rbt
 
 async def run_all_parsers(pages_per_store: int = 2):
     print("=== Начало сбора данных по стиральным машинам с доставкой в Георгиевск ===")
@@ -52,11 +53,20 @@ async def run_all_parsers(pages_per_store: int = 2):
     # 5. Позитроника
     try:
         print("\n--- Запуск парсера Позитроника ---")
-        pos_items = await parse_positronica(max_pages=pages_per_store)
+        pos_items = parse_positronica(max_pages=1)
         save_products(pos_items)
         total_products.extend(pos_items)
     except Exception as e:
         print(f"[ERROR] Positronica parser error: {e}")
+
+    # 6. RBT.ru
+    try:
+        print("\n--- Запуск каталога RBT.ru ---")
+        rbt_items = parse_rbt()
+        save_products(rbt_items)
+        total_products.extend(rbt_items)
+    except Exception as e:
+        print(f"[ERROR] RBT.ru parser error: {e}")
 
     print(f"\n=== Сбор завершен! Всего добавлено/обновлено: {len(total_products)} предложений ===")
     return len(total_products)

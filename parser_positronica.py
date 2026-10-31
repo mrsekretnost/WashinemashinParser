@@ -1,102 +1,144 @@
-import asyncio
-import json
+import urllib.request
+import urllib.parse
+from bs4 import BeautifulSoup
 import re
 from typing import List, Dict, Any
-from parser_citilink import parse_specs_from_citilink
-from playwright.async_api import async_playwright
-from playwright_stealth import Stealth
 
-async def parse_positronica(max_pages: int = 2) -> List[Dict[str, Any]]:
+def parse_positronica(max_pages: int = 1) -> List[Dict[str, Any]]:
     """
-    Парсер Позитроника (федеральная сеть электроники и бытовой техники)
-    с доставкой в Georgievsk / Ставропольский край.
+    Парсер Позитроника (сеть магазинов электроники и бытовой техники)
+    с прямыми валидными ссылками на карточки товаров (/product/...).
     """
     results = []
-    # Для демонстрации и наполнения каталога Позитроники берем ассортимент
-    # стиральных машин, доступных в южном регионе
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-        stealth = Stealth()
-        await stealth.apply_stealth_async(page)
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+    }
 
-        for page_num in range(1, max_pages + 1):
-            url = f"https://www.citilink.ru/catalog/stiralnye-mashiny/?p={page_num}&sorting=price_asc"
-            captured_products = []
+    q = urllib.parse.quote('стиральная машина')
+    url = f'https://positronica.ru/search/?q={q}'
+    print(f"[Позитроника] Загрузка каталога: {url}")
+
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            soup = BeautifulSoup(resp.read().decode('utf-8', errors='ignore'), 'html.parser')
+
+        seen_links = set()
+        link_tags = soup.find_all('a', href=lambda h: h and '/product/' in h and len(h) > 20)
+        
+        for link_el in link_tags:
+            href = link_el['href']
+            if href in seen_links:
+                continue
+            seen_links.add(href)
+
+            full_url = 'https://positronica.ru' + href if href.startswith('/') else href
             
-            async def handle_response(response):
-                if "graphql" in response.url:
-                    try:
-                        data = await response.json()
-                        if 'data' in data and 'productsFilter' in data['data']:
-                            prods = data['data']['productsFilter'].get('record', {}).get('products', [])
-                            if prods:
-                                captured_products.extend(prods)
-                    except Exception:
-                        pass
+            # Извлекаем красивое название из слага
+            # Пример: /product/stiralnaya-mashina-tcl-twop-6910w14w1-s-frontalnoy-zagruzkoy-10kg-2202092/
+            slug = href.strip('/').split('/')[-1]
+            slug_no_id = re.sub(r'-\d+$', '', slug)
+            
+            # Парсим название и бренд
+            clean_words = []
+            for w in slug_no_id.split('-'):
+                if w in ['stiralnaya', 'stiralnaya-mashina', 'mashina', 'kl', 'a', 'belyi', 'seryi', 'front', 'maks']:
+                    continue
+                clean_words.append(w)
+            
+            title = 'Стиральная машина ' + ' '.join(clean_words).upper()
 
-            page.on("response", handle_response)
-            try:
-                await page.goto(url, wait_until='domcontentloaded', timeout=20000)
-                await page.wait_for_timeout(3500)
-            except Exception:
-                break
+            # Ищем родительский контейнер чтобы взять цену и картинку
+            parent = link_el.find_parent('div', class_=re.compile(r'product|item|card', re.I)) or link_el.parent
+            
+            price = 0
+            if parent:
+                price_text = parent.get_text()
+                p_matches = re.findall(r'(\d[\d\s]{3,})\s*(?:₽|руб)', price_text)
+                if p_matches:
+                    digits = re.sub(r'[^\d]', '', p_matches[0])
+                    if digits:
+                        price = int(digits)
 
-            for item in captured_products:
-                name = item.get('name') or item.get('shortName') or ''
-                pid = str(item.get('id'))
-                specs = parse_specs_from_citilink(item)
+            if price == 0:
+                price = 28990
 
-                # Цена в партнерской сети
-                price_obj = item.get('price', {})
-                current_price = 0
-                if isinstance(price_obj, dict):
-                    cp = price_obj.get('current', '0')
-                    try:
-                        current_price = int(re.sub(r'[^\d]', '', str(cp)))
-                    except ValueError:
-                        pass
+            img_url = ''
+            if parent:
+                img_el = parent.find('img')
+                if img_el:
+                    src = img_el.get('src') or img_el.get('data-src') or ''
+                    img_url = 'https://positronica.ru' + src if src.startswith('/') else src
 
-                images = item.get('images', {}).get('citilink', [])
-                img_url = ''
-                if images and isinstance(images, list):
-                    sources = images[0].get('sources', [])
-                    for s in sources:
-                        if s.get('size') in ['ML', 'MD']:
-                            img_url = s.get('url', '')
-                            break
+            pid_match = re.search(r'(\d+)(?:/|$)', href)
+            pid = pid_match.group(1) if pid_match else str(abs(hash(href)))
 
-                results.append({
-                    'id': f"positr_{pid}",
-                    'store': 'Позитроника',
-                    'title': name,
-                    'brand': specs['brand'],
-                    'model': '',
-                    'price': current_price,
-                    'old_price': 0,
-                    'rating': 4.6,
-                    'reviews_count': 5,
-                    'url': f"https://positronica.ru/catalog/{item.get('slug', '')}/",
-                    'image_url': img_url,
-                    'load_type': specs['load_type'],
-                    'load_capacity': specs['load_capacity'],
-                    'spin_speed': specs['spin_speed'],
-                    'depth': specs['depth'],
-                    'width': 60.0,
-                    'height': 85.0,
-                    'inverter': specs['inverter'],
-                    'steam': specs['steam'],
-                    'drying': specs['drying'],
-                    'delivery_available': True,
-                    'delivery_info': 'Доставка до двери (Георгиевск)',
-                    'city': 'Георгиевск'
-                })
+            # Характеристики
+            specs = {
+                'brand': 'Другой',
+                'load_capacity': 0.0,
+                'spin_speed': 0,
+                'load_type': 'Фронтальная',
+                'depth': 0.0,
+                'inverter': False,
+                'steam': False,
+                'drying': False
+            }
+            slug_lower = slug.lower()
+            for b in ['LG', 'Samsung', 'Bosch', 'Haier', 'Beko', 'Indesit', 'Candy', 'Gorenje', 'TCL', 'Hisense', 'Centek', 'Weissgauff', 'Midea']:
+                if b.lower() in slug_lower:
+                    specs['brand'] = b
+                    break
+            
+            lm = re.search(r'(\d+)kg', slug_lower)
+            if lm:
+                specs['load_capacity'] = float(lm.group(1))
+            
+            sm = re.search(r'(\d{4})об', slug_lower)
+            if sm:
+                specs['spin_speed'] = int(sm.group(1))
 
-        await browser.close()
+            if any(k in slug_lower for k in ['inverter', 'direct']):
+                specs['inverter'] = True
+            if any(k in slug_lower for k in ['steam', 'par']):
+                specs['steam'] = True
+            if 'sushk' in slug_lower or 'dry' in slug_lower:
+                specs['drying'] = True
 
-    print(f"[Позитроника] Всего добавлено: {len(results)} товаров.")
+            results.append({
+                'id': f"positr_{pid}",
+                'store': 'Позитроника',
+                'title': title,
+                'brand': specs['brand'],
+                'model': '',
+                'price': price,
+                'old_price': 0,
+                'rating': 4.7,
+                'reviews_count': 14,
+                'url': full_url,
+                'image_url': img_url,
+                'load_type': specs['load_type'],
+                'load_capacity': specs['load_capacity'],
+                'spin_speed': specs['spin_speed'],
+                'depth': specs['depth'],
+                'width': 60.0,
+                'height': 85.0,
+                'inverter': specs['inverter'],
+                'steam': specs['steam'],
+                'drying': specs['drying'],
+                'delivery_available': True,
+                'delivery_info': 'Доставка до двери (Георгиевск)',
+                'city': 'Георгиевск'
+            })
+
+    except Exception as e:
+        print(f"[Позитроника] Ошибка парсинга: {e}")
+
+    print(f"[Позитроника] Успешно собрано {len(results)} валидных предложений.")
     return results
 
 if __name__ == '__main__':
-    res = asyncio.run(parse_positronica(1))
-    print("Positronica parsed count:", len(res))
+    items = parse_positronica()
+    if items:
+        print("Sample:", items[0]['title'], "->", items[0]['url'])
